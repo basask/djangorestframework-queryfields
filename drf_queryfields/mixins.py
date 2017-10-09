@@ -1,3 +1,6 @@
+class MisconfiguredSerializer(Exception):
+    pass
+
 class QueryFieldsMixin(object):
 
     # If using Django filters in the API, these labels mustn't conflict with any model field names.
@@ -9,23 +12,25 @@ class QueryFieldsMixin(object):
     delimiter = ','
 
     def __init__(self, *args, **kwargs):
+        force_fields = kwargs.pop('fields', None)
         super(QueryFieldsMixin, self).__init__(*args, **kwargs)
 
-        try:
-            request = self.context['request']
-            method = request.method
-        except (AttributeError, TypeError, KeyError):
-            # The serializer was not initialized with request context.
+        if force_fields:
+            for field in self.fields.keys():
+                if field not in force_fields:
+                    self.fields.pop(field)
             return
 
+        try:
+            request = self.get_request()
+        except MisconfiguredSerializer as exc:
+            return
+
+        method = self.get_method(request)
         if method != 'GET':
             return
 
-        try:
-            query_params = request.query_params
-        except AttributeError:
-            # DRF 2
-            query_params = getattr(request, 'QUERY_PARAMS', request.GET)
+        query_params = self.get_query_params(request)
 
         includes = query_params.getlist(self.include_arg_name)
         include_field_names = {name for names in includes for name in names.split(self.delimiter) if name}
@@ -45,3 +50,23 @@ class QueryFieldsMixin(object):
 
         for field in fields_to_drop:
             self.fields.pop(field)
+
+    def get_method(self, request=None):
+        req = request or self.get_request()
+        return getattr(req, 'method', None)
+
+    def get_request(self):
+        try:
+            return self.context['request']
+        except (AttributeError, TypeError, KeyError):
+            raise MisconfiguredSerializer('Either pass a request in context of serializer or override get request method')
+
+    def get_query_params(self, request=None):
+        req = request or self.get_request()
+        try:
+            query_params = req.query_params
+        except AttributeError:
+            # DRF 2
+            query_params = getattr(req, 'QUERY_PARAMS', req.GET)
+
+        return query_params
